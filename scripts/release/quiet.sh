@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs one workflow step with its output kept off this public repository's logs.
 #
-#   shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
-#   (add "powershell" after "$1" for a PowerShell step)
+#   shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}   (from a step whose working-directory is app)
+#   (add "powershell" after {0} for a PowerShell step; no quotes: macOS runners split the shell line on spaces)
 #
 # The step's output goes to a file on the runner, which is discarded with it. Deliberate ::warning:: and
 # ::notice:: lines are passed through. If the step fails, only that fact is logged. With SHOW_LOGS=true

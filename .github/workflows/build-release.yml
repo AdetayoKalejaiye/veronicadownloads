@@ -90,7 +90,7 @@ jobs:
       run: |
         node -e "const fs=require('fs');for(const f of ['package.json','src-tauri/tauri.conf.json']){const j=JSON.parse(fs.readFileSync(f));j.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')}"
         grep -m1 '"version"' src-tauri/tauri.conf.json
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
     - uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
@@ -104,28 +104,28 @@ jobs:
     - name: Install JavaScript dependencies
       run: pnpm install --frozen-lockfile
       working-directory: app
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
     - name: Build complete native Python engineering runtime
       run: uv run --no-project --python 3.12 python scripts/release/build-runtime.py --profile ${{ matrix.profile }}
       working-directory: app
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
     - name: Configure the bundle
       run: node scripts/release/configure-bundle.mjs
       working-directory: app
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
     - name: Make the icons
       run: pnpm exec tauri icon scripts/release/icon.svg --output src-tauri/icons
       working-directory: app
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
     - name: Build native app and installer
       run: pnpm exec tauri build --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
       env:
         APPLE_SIGNING_IDENTITY: '-'
       working-directory: app
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
     - name: Check the runtime inside the macOS application bundle
       if: runner.os == 'macOS'
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
       run: |
         ENGINE="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app/Contents/Resources/engine"
         APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app"
@@ -134,14 +134,14 @@ jobs:
       working-directory: app
     - name: Archive the checked macOS app
       if: runner.os == 'macOS'
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
       run: |
         APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app"
         ditto -c -k --sequesterRsrc --keepParent "$APP" "src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica-${{ matrix.platform }}.zip"
       working-directory: app
     - name: Install and check the Windows package
       if: runner.os == 'Windows'
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1" powershell' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0} powershell
       run: |
         $runnerRoots = @($env:RUNNER_TEMP, $env:RUNNER_WORKSPACE, $env:RUNNER_TOOL_CACHE) | Where-Object { $_ } |
           ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
@@ -200,7 +200,7 @@ jobs:
     - name: Record installer provenance and checksums
       run: uv run --no-project --python 3.12 python scripts/release/package-manifest.py --platform ${{ matrix.platform }} --target ${{ matrix.target }}
       working-directory: app
-      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+      shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
     - name: Upload installer metadata
       uses: actions/upload-artifact@v4
       with:

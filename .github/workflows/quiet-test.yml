@@ -20,17 +20,21 @@ jobs:
           $git = (Get-Command git -ErrorAction SilentlyContinue).Source
           $bin = Join-Path (Split-Path (Split-Path $git)) 'bin'
           Add-Content -Path $env:GITHUB_PATH -Value $bin -Encoding ascii
+      - name: Make the app folder the build steps run in
+        shell: bash
+        run: mkdir app
       - name: Quiet bash step that succeeds
-        working-directory: downloads
-        shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+        working-directory: app
+        shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
         run: |
           echo "THIS-SHOULD-BE-HIDDEN ${{ matrix.runner }}"
           echo "::warning::kept warning"
           pwd
       - name: Quiet bash step that fails
+        working-directory: app
         id: fails
         continue-on-error: true
-        shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+        shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0}
         run: |
           echo "HIDDEN-FAILURE-OUTPUT"
           false
@@ -40,7 +44,8 @@ jobs:
         run: test "${{ steps.fails.outcome }}" = failure
       - name: Quiet PowerShell step
         if: runner.os == 'Windows'
-        shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1" powershell' quiet {0}
+        working-directory: app
+        shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0} powershell
         run: |
           Write-Host "HIDDEN-POWERSHELL ${{ matrix.runner }}"
           Write-Host "::warning::kept powershell warning"
@@ -49,8 +54,9 @@ jobs:
       - name: Quiet PowerShell step that throws
         id: throws
         if: runner.os == 'Windows'
+        working-directory: app
         continue-on-error: true
-        shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1" powershell' quiet {0}
+        shell: bash --noprofile --norc ../downloads/scripts/release/quiet.sh {0} powershell
         run: |
           throw "HIDDEN-THROW"
       - name: The throwing step really failed
