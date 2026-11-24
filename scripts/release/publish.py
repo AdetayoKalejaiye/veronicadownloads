@@ -6,7 +6,8 @@ artifact and one for its metadata. No token for the private repository is ever s
 before any work and the event file is deleted; all three packages are downloaded first, while the grants are
 valid, then checked against their build receipts and uploaded.
 
-Run by hand (`workflow_dispatch`), it only makes sure the release holds the library sources.
+Run by hand (`workflow_dispatch`), it makes sure the release holds the library sources and that its
+downloads.json links are the permanent ones, each matching the asset it names.
 """
 from __future__ import annotations
 
@@ -77,6 +78,35 @@ def upload(release_id: int, folder: Path, name: str, path: Path) -> str:
     return remote["browser_download_url"]
 
 
+def tag_url(name: str) -> str:
+    return f"https://github.com/{REPO}/releases/download/{TAG}/{name}"
+
+
+def refresh_manifest(current: dict, folder: Path) -> None:
+    """Rewrite the release's downloads.json with permanent links, each checked against the asset it names."""
+    found = next((a for a in current["assets"] if a["name"] == "downloads.json"), None)
+    if found is None:
+        return
+    raw = subprocess.check_output(["gh", "api", "-H", "Accept: application/octet-stream",
+                                   f"repos/{REPO}/releases/assets/{found['id']}"])
+    downloads = json.loads(raw)
+    assets = {a["name"]: a for a in current["assets"]}
+    for platform, entry in downloads["builds"].items():
+        name = entry["url"].rsplit("/", 1)[-1]
+        asset = assets.get(name)
+        if asset is None or asset["size"] != entry["bytes"] or asset.get("digest") not in (None, "sha256:" + entry["sha256"]):
+            raise RuntimeError(f"{platform}: {name} on the release doesn't match downloads.json.")
+        entry["url"] = tag_url(name)
+    fresh = (json.dumps(downloads, indent=2) + "\n").encode()
+    if fresh == raw:
+        print("downloads.json is up to date.")
+        return
+    gh("release", "delete-asset", TAG, "downloads.json", "--yes")
+    (folder / "downloads.json").write_bytes(fresh)
+    upload(current["id"], folder, "downloads.json", folder / "downloads.json")
+    print(fresh.decode())
+
+
 def member(package: zipfile.ZipFile, name: str) -> str:
     return next(n for n in package.namelist() if Path(n).name == name)
 
@@ -140,6 +170,7 @@ def main():
             sources.write_bytes(build().getbuffer())
             upload(current["id"], folder, sources.name, sources)
         if not dispatched:
+            refresh_manifest(current, folder)
             return
 
         # An earlier run attached one shared relocation script; each platform's differs, so each is its own asset.
@@ -174,7 +205,8 @@ def main():
                                (f"{platform}-runtime.json", json.dumps(manifest, indent=2).encode())):
                 (folder / name).write_bytes(data)
                 upload(current["id"], folder, name, folder / name)
-            url = upload(current["id"], folder, binary.name, binary)
+            upload(current["id"], folder, binary.name, binary)
+            url = tag_url(binary.name)  # a draft's own links use a temporary name; this one is permanent
             binary.unlink()
             downloads["builds"][platform] = {"status": "available", "version": VERSION, "url": url,
                                              "bytes": installer["bytes"], "sha256": installer["sha256"], "runtimeChecked": True,
