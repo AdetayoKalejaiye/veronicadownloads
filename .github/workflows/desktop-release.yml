@@ -1,0 +1,21 @@
+name: Publish checked desktop installers
+on:
+  repository_dispatch:
+    types: [publish-checked-desktop]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'AdetayoKalejaiye/veronicadownloads'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish verified installers and their library sources
+        run: python3 scripts/release/publish.py
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
