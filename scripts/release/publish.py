@@ -18,6 +18,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -80,14 +81,23 @@ def member(package: zipfile.ZipFile, name: str) -> str:
     return next(n for n in package.namelist() if Path(n).name == name)
 
 
-def release() -> dict:
+def _find():
     releases = json.loads(subprocess.check_output(["gh", "api", f"repos/{REPO}/releases?per_page=100"], text=True))
-    found = next((r for r in releases if r["tag_name"] == TAG), None)
+    return next((r for r in releases if r["tag_name"] == TAG), None)
+
+
+def release() -> dict:
+    found = _find()
     if found is None:
         gh("release", "create", TAG, "--draft", "--title", f"Veronica {VERSION}", "--notes-file",
            str(Path(__file__).with_name("release-notes.md")))
-        releases = json.loads(subprocess.check_output(["gh", "api", f"repos/{REPO}/releases?per_page=100"], text=True))
-        found = next(r for r in releases if r["tag_name"] == TAG)
+        for _ in range(30):  # a new draft takes a moment to show up in the list
+            found = _find()
+            if found:
+                break
+            time.sleep(2)
+        else:
+            raise RuntimeError("The new draft release didn't appear.")
     return found
 
 
