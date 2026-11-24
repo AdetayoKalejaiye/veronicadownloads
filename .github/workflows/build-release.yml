@@ -1,0 +1,226 @@
+# Builds Veronica's Windows and macOS installers from the private app repository on this public
+# repository's free GitHub-hosted runners, checks them as the private native build does, and publishes
+# them as a release. Needs HARNESS_READ_TOKEN: a fine-grained token with read-only Contents access to
+# AdetayoKalejaiye/veronica-harness only. The source is checked out on the runner and never uploaded;
+# only the checked installers and their reports are, kept 1 day, then published. Logs are public.
+name: Build and publish desktop installers
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: veronica-harness branch, tag or commit to build
+        default: main
+        required: true
+      version:
+        description: Version for the installers and the release (e.g. 0.2.0)
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.repository == 'AdetayoKalejaiye/veronicadownloads'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: windows-latest
+          target: x86_64-pc-windows-msvc
+          platform: windows-x64
+          profile: standard
+        - runner: macos-15
+          target: aarch64-apple-darwin
+          platform: macos-arm64
+          profile: standard
+        - runner: macos-15-intel
+          target: x86_64-apple-darwin
+          platform: macos-x64
+          profile: intel-compatibility
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Check out this repository's release scripts
+      uses: actions/checkout@v4
+      with:
+        path: downloads
+    - name: Check out the app's source (read-only token)
+      uses: actions/checkout@v4
+      with:
+        repository: AdetayoKalejaiye/veronica-harness
+        ref: ${{ inputs.ref }}
+        token: ${{ secrets.HARNESS_READ_TOKEN }}
+        path: app
+        persist-credentials: false
+    - uses: pnpm/action-setup@v4
+      with:
+        package_json_file: app/package.json
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: app/.nvmrc
+        cache: pnpm
+        cache-dependency-path: app/pnpm-lock.yaml
+    - name: Set the version
+      working-directory: app
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        node -e "const fs=require('fs');for(const f of ['package.json','src-tauri/tauri.conf.json']){const j=JSON.parse(fs.readFileSync(f));j.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')}"
+        grep -m1 '"version"' src-tauri/tauri.conf.json
+    - uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+        cache-dependency-glob: app/backend/uv.lock
+    - name: Use Git Bash for bash steps
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        $git = (Get-Command git -ErrorAction SilentlyContinue).Source
+        $candidates = @("$env:ProgramFiles\Git\bin", "${env:ProgramFiles(x86)}\Git\bin")
+        if ($git) { $candidates = @((Join-Path (Split-Path (Split-Path $git)) 'bin')) + $candidates }
+        $bin = $candidates | Where-Object { Test-Path (Join-Path $_ 'bash.exe') } | Select-Object -First 1
+        if (-not $bin) { throw "Git for Windows isn't installed on this runner: install it from https://git-scm.com/download/win and restart the runner." }
+        Add-Content -Path $env:GITHUB_PATH -Value $bin -Encoding ascii
+        Write-Host "bash steps will use $bin\bash.exe"
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: app/src-tauri
+    - name: Install JavaScript dependencies
+      run: pnpm install --frozen-lockfile
+      working-directory: app
+    - name: Build complete native Python engineering runtime
+      run: uv run --no-project --python 3.12 python scripts/release/build-runtime.py --profile ${{ matrix.profile }}
+      working-directory: app
+    - run: node scripts/release/configure-bundle.mjs
+      working-directory: app
+    - run: pnpm exec tauri icon scripts/release/icon.svg --output src-tauri/icons
+      working-directory: app
+    - name: Build native app and installer
+      run: pnpm exec tauri build --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
+      env:
+        APPLE_SIGNING_IDENTITY: '-'
+      working-directory: app
+    - name: Check the runtime inside the macOS application bundle
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        ENGINE="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app/Contents/Resources/engine"
+        APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app"
+        uv run --no-project --python 3.12 python scripts/release/check-runtime.py "$ENGINE" --launcher "$APP/Contents/MacOS/veronica-harness"
+        codesign --verify --deep --strict "src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app"
+      working-directory: app
+    - name: Archive the checked macOS app
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app"
+        ditto -c -k --sequesterRsrc --keepParent "$APP" "src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica-${{ matrix.platform }}.zip"
+      working-directory: app
+    - name: Install and check the Windows package
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        $runnerRoots = @($env:RUNNER_TEMP, $env:RUNNER_WORKSPACE, $env:RUNNER_TOOL_CACHE) | Where-Object { $_ } |
+          ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
+        function Get-VeronicaEntries {
+          $keys = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                  'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+          foreach ($key in $keys) {
+            Get-ChildItem $key -ErrorAction SilentlyContinue | ForEach-Object {
+              $entry = Get-ItemProperty $_.PSPath
+              if ($entry.DisplayName -like 'Veronica*') { $entry }
+            }
+          }
+        }
+        function Test-RunnerPath($path) {
+          if (-not $path) { return $false }
+          $full = [IO.Path]::GetFullPath(($path -replace '"', '').Trim()).TrimEnd('\') + '\'
+          return [bool]($runnerRoots | Where-Object { $full.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })
+        }
+        $own = Get-VeronicaEntries | Where-Object {
+          $location = if ($_.InstallLocation) { $_.InstallLocation } else { Split-Path ($_.UninstallString -replace '"', '') }
+          -not (Test-RunnerPath $location)
+        }
+        if ($env:RUNNER_ENVIRONMENT -eq 'self-hosted' -and $own) {
+          Write-Host "::warning::Skipped the installed-package check: Veronica is installed on this machine at $($own[0].InstallLocation), and installing the check copy would take over that install. The runtime itself was already checked by the build. To run this check here, uninstall Veronica first."
+          exit 0
+        }
+        $installer = Get-ChildItem 'src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe' | Select-Object -First 1
+        $installPath = Join-Path $env:RUNNER_TEMP 'Veronica packaged check'
+        $code = 1
+        try {
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList "/S /D=$installPath" -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          uv run --no-project --python 3.12 python scripts/release/check-runtime.py "$installPath/engine" --launcher "$installPath/veronica-harness.exe"
+          $code = $LASTEXITCODE
+        } finally {
+          # _?= runs the uninstaller in place and waits for it (NSIS otherwise returns at once).
+          $uninstaller = Join-Path $installPath 'uninstall.exe'
+          if (Test-Path $uninstaller) {
+            Start-Process -FilePath $uninstaller -ArgumentList "/S _?=$installPath" -Wait
+          }
+          Remove-Item -Recurse -Force $installPath -ErrorAction SilentlyContinue
+          # Whatever the uninstaller missed: entries and shortcuts that point at the check copy.
+          Get-VeronicaEntries | Where-Object { Test-RunnerPath ($(if ($_.InstallLocation) { $_.InstallLocation } else { Split-Path ($_.UninstallString -replace '"', '') })) } |
+            ForEach-Object { Remove-Item $_.PSPath -Recurse -ErrorAction SilentlyContinue }
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($folder in "$env:APPDATA\Microsoft\Windows\Start Menu\Programs", [Environment]::GetFolderPath('Desktop')) {
+            Get-ChildItem $folder -Filter 'Veronica*.lnk' -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { Test-RunnerPath $shell.CreateShortcut($_.FullName).TargetPath } |
+              Remove-Item -ErrorAction SilentlyContinue
+          }
+          Write-Host "Removed the check copy of Veronica and its registration."
+        }
+        exit $code
+      working-directory: app
+    - name: Record installer provenance and checksums
+      run: uv run --no-project --python 3.12 python scripts/release/package-manifest.py --platform ${{ matrix.platform }} --target ${{ matrix.target
+        }}
+      working-directory: app
+    - name: Upload installer metadata
+      uses: actions/upload-artifact@v4
+      with:
+        name: veronica-${{ matrix.platform }}-metadata
+        path: app/build/native-release/*.json
+        if-no-files-found: error
+        retention-days: 1
+    - name: Upload the checked installer
+      uses: actions/upload-artifact@v4
+      with:
+        name: veronica-${{ matrix.platform }}-preview
+        compression-level: 0
+        path: |
+          app/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.zip
+          app/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+          app/build/native-runtime/engine/runtime-manifest.json
+          app/build/native-runtime/engine/runtime-check.json
+          app/build/native-runtime/engine/native-link-check.json
+          app/build/native-runtime/engine/licenses/native-library-relocation.py
+        if-no-files-found: error
+        retention-days: 1
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+    - uses: actions/checkout@v4
+    - name: Collect the three checked builds
+      uses: actions/download-artifact@v4
+      with:
+        pattern: veronica-*
+        path: packages
+    - name: Check and publish them
+      run: python3 scripts/release/publish.py
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        LOCAL_PACKAGES: packages
+        RELEASE_TAG: v${{ inputs.version }}

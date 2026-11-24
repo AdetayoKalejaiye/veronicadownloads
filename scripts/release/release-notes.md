@@ -1,4 +1,4 @@
-Veronica 0.1.0 for Windows and macOS.
+Veronica for Windows and macOS.
 
 | Your computer | Download |
 | --- | --- |

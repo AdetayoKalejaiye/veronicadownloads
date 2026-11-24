@@ -6,7 +6,8 @@ artifact and one for its metadata. No token for the private repository is ever s
 before any work and the event file is deleted; all three packages are downloaded first, while the grants are
 valid, then checked against their build receipts and uploaded.
 
-Run by hand (`workflow_dispatch`), it makes sure the release holds the library sources and that its
+Run by `build-release.yml` (LOCAL_PACKAGES set), it publishes the three builds that workflow just made and
+checked, read from disk. Run by hand (`workflow_dispatch`), it makes sure the release holds the library sources and that its
 downloads.json links are the permanent ones, each matching the asset it names.
 """
 from __future__ import annotations
@@ -134,7 +135,7 @@ def release() -> dict:
 def main():
     event_path = Path(os.environ["GITHUB_EVENT_PATH"])
     event = json.loads(event_path.read_text())
-    dispatched = os.environ.get("GITHUB_EVENT_NAME") == "repository_dispatch"
+    dispatched = os.environ.get("GITHUB_EVENT_NAME") == "repository_dispatch" and not os.environ.get("LOCAL_PACKAGES")
     transfer = event.get("client_payload") if dispatched else None
     if dispatched:
         # The payload is never interpolated into shell or env blocks, printed, cached or uploaded.
@@ -147,7 +148,25 @@ def main():
     with tempfile.TemporaryDirectory(prefix="veronica-release-") as directory:
         folder = Path(directory)
         packages = {}
-        if dispatched:
+        local = os.environ.get("LOCAL_PACKAGES")
+        if local:  # built by this repository's own workflow: the three builds are already on disk
+            commits = set()
+            for platform in PLATFORMS:
+                for kind, part in (("metadata", "metadata"), ("preview", "package")):
+                    source = Path(local) / f"veronica-{platform}-{kind}"
+                    if not source.is_dir():
+                        raise RuntimeError(f"{platform}: its {kind} build is missing; every platform must pass.")
+                    with zipfile.ZipFile(folder / f"{platform}-{part}.zip", "w", zipfile.ZIP_STORED) as bundle:
+                        for path in sorted(source.rglob("*")):
+                            if path.is_file():
+                                bundle.write(path, path.relative_to(source).as_posix())
+                with zipfile.ZipFile(folder / f"{platform}-metadata.zip") as small:
+                    commits.add(json.loads(small.read(member(small, f"{platform}.json")))["commit"])
+            if len(commits) != 1:
+                raise RuntimeError("The three builds come from different commits.")
+            transfer = {"schema": 2, "commit": commits.pop(), "builds": dict.fromkeys(PLATFORMS)}
+            dispatched = True
+        elif dispatched:
             if not transfer or transfer.get("schema") != 2 or len(transfer.get("commit", "")) != 40:
                 raise RuntimeError("Invalid native transfer provenance.")
             if set(transfer["builds"]) != set(PLATFORMS):
@@ -157,6 +176,7 @@ def main():
                 fetch(item["metadata_url"], folder / f"{platform}-metadata.zip")
                 fetch(item["url"], folder / f"{platform}-package.zip")
                 print(f"Downloaded {platform}", flush=True)
+        if dispatched:
             for platform in PLATFORMS:
                 with zipfile.ZipFile(folder / f"{platform}-metadata.zip") as small:
                     metadata = json.loads(small.read(member(small, f"{platform}.json")))
