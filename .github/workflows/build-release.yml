@@ -2,18 +2,24 @@
 # repository's free GitHub-hosted runners, checks them as the private native build does, and publishes
 # them as a release. Needs HARNESS_READ_TOKEN: a fine-grained token with read-only Contents access to
 # AdetayoKalejaiye/veronica-harness only. The source is checked out on the runner and never uploaded;
-# only the checked installers and their reports are, kept 1 day, then published. Logs are public.
+# only the checked installers and their reports are, kept 1 day, then published. Logs are public, so the
+# app's source is fetched quietly and each build step's output stays on the runner (scripts/release/quiet.sh)
+# unless show_logs is ticked.
 name: Build and publish desktop installers
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: veronica-harness branch, tag or commit to build
+        description: veronica-harness branch, tag or full commit SHA to build
         default: main
         required: true
       version:
         description: Version for the installers and the release (e.g. 0.2.0)
         required: true
+      show_logs:
+        description: Show the build's output in the (public) logs, to debug a failed build
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -48,14 +54,27 @@ jobs:
       uses: actions/checkout@v4
       with:
         path: downloads
-    - name: Check out the app's source (read-only token)
-      uses: actions/checkout@v4
-      with:
-        repository: AdetayoKalejaiye/veronica-harness
-        ref: ${{ inputs.ref }}
-        token: ${{ secrets.HARNESS_READ_TOKEN }}
-        path: app
-        persist-credentials: false
+    - name: Use Git Bash for bash steps
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        $git = (Get-Command git -ErrorAction SilentlyContinue).Source
+        $candidates = @("$env:ProgramFiles\Git\bin", "${env:ProgramFiles(x86)}\Git\bin")
+        if ($git) { $candidates = @((Join-Path (Split-Path (Split-Path $git)) 'bin')) + $candidates }
+        $bin = $candidates | Where-Object { Test-Path (Join-Path $_ 'bash.exe') } | Select-Object -First 1
+        if (-not $bin) { throw "Git for Windows isn't installed on this runner: install it from https://git-scm.com/download/win and restart the runner." }
+        Add-Content -Path $env:GITHUB_PATH -Value $bin -Encoding ascii
+        Write-Host "bash steps will use $bin\bash.exe"
+    - name: Get the app's source (read-only token)
+      env:
+        TOKEN: ${{ secrets.HARNESS_READ_TOKEN }}
+        REF: ${{ inputs.ref }}
+      run: |
+        if [ -z "$TOKEN" ]; then echo "::error::Add the HARNESS_READ_TOKEN secret (read-only Contents access to veronica-harness)."; exit 1; fi
+        # Fetched quietly: no commit message or file list in the public log.
+        git init -q app
+        git -C app fetch -q --depth=1 "https://x-access-token:${TOKEN}@github.com/AdetayoKalejaiye/veronica-harness.git" "$REF"
+        git -C app -c advice.detachedHead=false checkout -q FETCH_HEAD
     - uses: pnpm/action-setup@v4
       with:
         package_json_file: app/package.json
@@ -71,21 +90,11 @@ jobs:
       run: |
         node -e "const fs=require('fs');for(const f of ['package.json','src-tauri/tauri.conf.json']){const j=JSON.parse(fs.readFileSync(f));j.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')}"
         grep -m1 '"version"' src-tauri/tauri.conf.json
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
     - uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
         cache-dependency-glob: app/backend/uv.lock
-    - name: Use Git Bash for bash steps
-      if: runner.os == 'Windows'
-      shell: powershell
-      run: |
-        $git = (Get-Command git -ErrorAction SilentlyContinue).Source
-        $candidates = @("$env:ProgramFiles\Git\bin", "${env:ProgramFiles(x86)}\Git\bin")
-        if ($git) { $candidates = @((Join-Path (Split-Path (Split-Path $git)) 'bin')) + $candidates }
-        $bin = $candidates | Where-Object { Test-Path (Join-Path $_ 'bash.exe') } | Select-Object -First 1
-        if (-not $bin) { throw "Git for Windows isn't installed on this runner: install it from https://git-scm.com/download/win and restart the runner." }
-        Add-Content -Path $env:GITHUB_PATH -Value $bin -Encoding ascii
-        Write-Host "bash steps will use $bin\bash.exe"
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ matrix.target }}
@@ -95,21 +104,28 @@ jobs:
     - name: Install JavaScript dependencies
       run: pnpm install --frozen-lockfile
       working-directory: app
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
     - name: Build complete native Python engineering runtime
       run: uv run --no-project --python 3.12 python scripts/release/build-runtime.py --profile ${{ matrix.profile }}
       working-directory: app
-    - run: node scripts/release/configure-bundle.mjs
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+    - name: Configure the bundle
+      run: node scripts/release/configure-bundle.mjs
       working-directory: app
-    - run: pnpm exec tauri icon scripts/release/icon.svg --output src-tauri/icons
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
+    - name: Make the icons
+      run: pnpm exec tauri icon scripts/release/icon.svg --output src-tauri/icons
       working-directory: app
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
     - name: Build native app and installer
       run: pnpm exec tauri build --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
       env:
         APPLE_SIGNING_IDENTITY: '-'
       working-directory: app
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
     - name: Check the runtime inside the macOS application bundle
       if: runner.os == 'macOS'
-      shell: bash
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
       run: |
         ENGINE="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app/Contents/Resources/engine"
         APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app"
@@ -118,14 +134,14 @@ jobs:
       working-directory: app
     - name: Archive the checked macOS app
       if: runner.os == 'macOS'
-      shell: bash
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
       run: |
         APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica.app"
         ditto -c -k --sequesterRsrc --keepParent "$APP" "src-tauri/target/${{ matrix.target }}/release/bundle/macos/Veronica-${{ matrix.platform }}.zip"
       working-directory: app
     - name: Install and check the Windows package
       if: runner.os == 'Windows'
-      shell: powershell
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1" powershell' quiet {0}
       run: |
         $runnerRoots = @($env:RUNNER_TEMP, $env:RUNNER_WORKSPACE, $env:RUNNER_TOOL_CACHE) | Where-Object { $_ } |
           ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
@@ -182,9 +198,9 @@ jobs:
         exit $code
       working-directory: app
     - name: Record installer provenance and checksums
-      run: uv run --no-project --python 3.12 python scripts/release/package-manifest.py --platform ${{ matrix.platform }} --target ${{ matrix.target
-        }}
+      run: uv run --no-project --python 3.12 python scripts/release/package-manifest.py --platform ${{ matrix.platform }} --target ${{ matrix.target }}
       working-directory: app
+      shell: bash --noprofile --norc -c 'exec bash "$GITHUB_WORKSPACE/downloads/scripts/release/quiet.sh" "$1"' quiet {0}
     - name: Upload installer metadata
       uses: actions/upload-artifact@v4
       with:
@@ -207,6 +223,8 @@ jobs:
           app/build/native-runtime/engine/licenses/native-library-relocation.py
         if-no-files-found: error
         retention-days: 1
+    env:
+      SHOW_LOGS: ${{ inputs.show_logs }}
   publish:
     needs: package
     runs-on: ubuntu-latest
