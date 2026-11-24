@@ -142,6 +142,10 @@ def main():
         if not dispatched:
             return
 
+        # An earlier run attached one shared relocation script; each platform's differs, so each is its own asset.
+        if any(a["name"] == "native-library-relocation.py" for a in current["assets"]):
+            gh("release", "delete-asset", TAG, "native-library-relocation.py", "--yes")
+
         downloads = {"schema": 1, "version": VERSION, "tag": TAG, "sourceCommit": transfer["commit"], "builds": {}}
         for platform, suffix in PLATFORMS.items():
             metadata = packages[platform]
@@ -166,7 +170,7 @@ def main():
             (folder / f"{platform}-package.zip").unlink()
             if binary.stat().st_size != installer["bytes"] or sha256(binary) != installer["sha256"]:
                 raise RuntimeError(f"{platform}: installer differs from its build receipt.")
-            for name, data in ((f"{platform}-linkage.json", linkage), ("native-library-relocation.py", relocation),
+            for name, data in ((f"{platform}-linkage.json", linkage), (f"{platform}-native-library-relocation.py", relocation),
                                (f"{platform}-runtime.json", json.dumps(manifest, indent=2).encode())):
                 (folder / name).write_bytes(data)
                 upload(current["id"], folder, name, folder / name)
